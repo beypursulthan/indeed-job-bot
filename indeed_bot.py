@@ -73,23 +73,62 @@ def search_jobs(driver, filters):
 def is_easy_apply(driver):
     """Check if the job has Indeed's Easy Apply button (both English and German)."""
     try:
-        # Try multiple selectors for the apply button
+        # Try multiple ways to find the button (just as helpers to locate potential buttons)
+        buttons = []
         selectors = [
-            "[data-testid='indeedApplyButton']",
-            "[data-testid='schnellbewerbung-button']",
-            "button[class*='indeed-apply-button']",
-            "button[class*='job-apply-button']"
+            (By.ID, "indeedApplyButton"),
+            (By.CSS_SELECTOR, "button[class*='css-km0m34']"),
+            (By.CSS_SELECTOR, "button[aria-label*='Schnellbewerbung']"),
+            (By.CSS_SELECTOR, "button[aria-label*='Quick Apply']"),
+            (By.CSS_SELECTOR, "button")  # Fallback to check all buttons
         ]
         
-        for selector in selectors:
+        print("\nChecking for Easy Apply button...")
+        # Collect all potential buttons
+        for by, selector in selectors:
             try:
-                apply_button = driver.find_element(By.CSS_SELECTOR, selector)
-                if apply_button.is_displayed():
-                    button_text = apply_button.text.lower()
-                    print(f"Found button with text: {button_text}")  # Debug print
-                    return "schnellbewerbung" in button_text or "easy apply" in button_text
-            except NoSuchElementException:
+                elements = driver.find_elements(by, selector)
+                buttons.extend(elements)
+            except:
                 continue
+                
+        print(f"Found {len(buttons)} buttons to check")
+        
+        # Check each button for either criteria: color OR text
+        for button in buttons:
+            if not button.is_displayed():
+                continue
+                
+            try:
+                # Check the color
+                bg_color = button.value_of_css_property("background-color")
+                print(f"Button background color: {bg_color}")
+                
+                # Check the text
+                button_text = button.text.lower()
+                if not button_text:
+                    try:
+                        wrapper = button.find_element(By.CLASS_NAME, "jobsearch-IndeedApplyButton-contentWrapper")
+                        button_text = wrapper.text.lower()
+                    except:
+                        try:
+                            span = button.find_element(By.CSS_SELECTOR, "span.jobsearch-IndeedApplyButton-newDesign")
+                            button_text = span.text.lower()
+                        except:
+                            continue
+                
+                print(f"Button text: {button_text}")
+                
+                # If EITHER color OR text matches, we found our button!
+                if ("rgb(37, 87, 167)" in bg_color or "#2557a7" in bg_color or 
+                    "schnellbewerbung" in button_text):
+                    print("Found matching button!")
+                    return True
+            except Exception as e:
+                print(f"Error checking button: {e}")
+                continue
+        
+        print("No matching button found")
         return False
     except Exception as e:
         print(f"Error checking for easy apply: {e}")
@@ -116,60 +155,157 @@ def highlight_element(driver, element):
 def apply_to_job(driver):
     """Apply to a job using Indeed Easy Apply/Schnellbewerbung."""
     try:
-        # Try multiple selectors for the apply button
-        selectors = [
-            "[data-testid='indeedApplyButton']",
-            "[data-testid='schnellbewerbung-button']",
-            "button[class*='indeed-apply-button']",
-            "button[class*='job-apply-button']"
-        ]
-        
+        # Try to find the button using the same successful selectors from is_easy_apply
         apply_button = None
-        for selector in selectors:
+        
+        # First try the ID
+        try:
+            apply_button = driver.find_element(By.ID, "indeedApplyButton")
+            if apply_button.is_displayed() and "schnellbewerbung" in apply_button.text.lower():
+                print("Found button by ID")
+        except:
+            pass
+            
+        # If not found, try by class and color
+        if not apply_button:
             try:
-                button = driver.find_element(By.CSS_SELECTOR, selector)
-                if button.is_displayed():
-                    apply_button = button
-                    break
-            except NoSuchElementException:
-                continue
+                buttons = driver.find_elements(By.CSS_SELECTOR, "button[class*='css-km0m34']")
+                for button in buttons:
+                    if button.is_displayed():
+                        bg_color = button.value_of_css_property("background-color")
+                        button_text = button.text.lower()
+                        
+                        # Check for either blue color or Schnellbewerbung text
+                        if ("rgb(37, 87, 167)" in bg_color or "#2557a7" in bg_color or 
+                            "schnellbewerbung" in button_text):
+                            apply_button = button
+                            print(f"Found button with color: {bg_color} and text: {button_text}")
+                            break
+            except Exception as e:
+                print(f"Error finding button by class/color: {e}")
                 
         if not apply_button:
             print("Could not find apply button")
             return False
             
+        print("Clicking apply button...")
         highlight_element(driver, apply_button)
         apply_button.click()
         time.sleep(2)
 
-        # Switch to the application iframe if present
-        try:
-            iframe = WebDriverWait(driver, 5).until(
-                EC.presence_of_element_located((By.CLASS_NAME, "indeed-apply-iframe"))
-            )
-            driver.switch_to.frame(iframe)
-        except TimeoutException:
-            print("Could not find application iframe")
-            return False
+        # Switch to the new tab if opened
+        original_window = driver.current_window_handle
+        for window_handle in driver.window_handles:
+            if window_handle != original_window:
+                driver.switch_to.window(window_handle)
+                break
 
-        # Look for the continue/submit button
-        try:
-            continue_button = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "button[type='submit']"))
-            )
-            continue_button.click()
-            print("Successfully applied to job!")
-            return True
-        except TimeoutException:
-            print("Could not find continue button")
-            return False
+        # Wait for form to load
+        time.sleep(3)
+
+        # List of button text to look for (both German and English)
+        continue_buttons_text = [
+            'weiter',  # Further
+            'fortfahren',  # Continue
+            'fortsetzung',  # Continue
+            'fortsetzen',  # Continue
+            'next',
+            'continue',
+            'submit',
+            'apply',
+            'senden',  # Send
+            'bewerben',  # Apply
+            'bewerbung absenden',  # Send application
+            'jetzt bewerben',  # Apply now
+            'trotzdem bewerben'  # Apply anyway
+        ]
+
+        # Keep clicking continue buttons until we see success message or run out of buttons
+        max_steps = 10  # Maximum number of form steps
+        for step in range(max_steps):
+            try:
+                # Look for success message
+                success_texts = [
+                    'bewerbung gesendet',  # Application sent
+                    'application submitted',
+                    'successfully submitted',
+                    'thank you for applying'
+                ]
+                
+                page_text = driver.page_source.lower()
+                if any(text in page_text for text in success_texts):
+                    print("Application successfully submitted!")
+                    driver.close()  # Close the application tab
+                    driver.switch_to.window(original_window)  # Switch back to main window
+                    return True
+
+                # Try to find and click the next button
+                button_found = False
+                
+                # Special check for "Weiter" button with display: flex
+                try:
+                    weiter_buttons = driver.find_elements(By.CSS_SELECTOR, "button[type='button']")
+                    for button in weiter_buttons:
+                        if button.is_displayed() and button.is_enabled():
+                            display_style = driver.execute_script(
+                                "return window.getComputedStyle(arguments[0]).display", 
+                                button
+                            )
+                            if display_style == 'flex' and button.text.lower() == 'weiter':
+                                highlight_element(driver, button)
+                                button.click()
+                                print("Clicked 'Weiter' button")
+                                button_found = True
+                                time.sleep(2)
+                                break
+                except Exception as e:
+                    print(f"Error checking for Weiter button: {e}")
+
+                # If "Weiter" button not found, try other buttons
+                if not button_found:
+                    for button_text in continue_buttons_text:
+                        try:
+                            buttons = driver.find_elements(By.XPATH, 
+                                f"//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{button_text}')]")
+                            
+                            for button in buttons:
+                                if button.is_displayed() and button.is_enabled():
+                                    highlight_element(driver, button)
+                                    button.click()
+                                    print(f"Clicked button: {button_text}")
+                                    button_found = True
+                                    time.sleep(2)
+                                    break
+                            if button_found:
+                                break
+                        except:
+                            continue
+
+                if not button_found:
+                    print("No more buttons found")
+                    driver.close()
+                    driver.switch_to.window(original_window)
+                    return False
+
+            except Exception as e:
+                print(f"Error in application step {step}: {e}")
+                driver.close()
+                driver.switch_to.window(original_window)
+                return False
+
+        print("Reached maximum number of steps without completing application")
+        driver.close()
+        driver.switch_to.window(original_window)
+        return False
 
     except Exception as e:
         print(f"Error during application: {e}")
+        try:
+            driver.close()
+            driver.switch_to.window(driver.window_handles[0])
+        except:
+            pass
         return False
-    finally:
-        # Switch back to default content
-        driver.switch_to.default_content()
 
 def close_popups(driver):
     """Close any pop-ups that might appear."""
@@ -219,6 +355,19 @@ def click_job_card(driver, job_card):
     except Exception as e:
         print(f"Error clicking job card: {e}")
         return False
+
+def retry_with_backoff(func, max_retries=3):
+    """Retry a function with exponential backoff."""
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            if "invalid session" in str(e).lower():
+                if attempt == max_retries - 1:  # Last attempt
+                    raise  # Re-raise the last exception
+                time.sleep(2 ** attempt)  # Exponential backoff
+                continue
+            raise  # Re-raise other exceptions immediately
 
 def main():
     """Launch an undetected Chrome session and automate job applications."""
@@ -272,9 +421,9 @@ def main():
                         close_popups(driver)
                         
                         # Check if it's an Easy Apply job
-                        if is_easy_apply(driver):
+                        if retry_with_backoff(lambda: is_easy_apply(driver)):
                             print("Found Easy Apply job, attempting to apply...")
-                            if apply_to_job(driver):
+                            if retry_with_backoff(lambda: apply_to_job(driver)):
                                 jobs_applied += 1
                                 print(f"Successfully applied! Total applications: {jobs_applied}")
                         else:
