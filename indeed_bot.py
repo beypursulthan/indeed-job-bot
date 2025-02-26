@@ -383,7 +383,7 @@ def main():
         wait = WebDriverWait(driver, 10)
         
         # Open Indeed
-        driver.get("https://www.indeed.com/")
+        driver.get("https://de.indeed.com/")  # German Indeed site
         time.sleep(2)
         
         input("Press Enter after logging in to continue...")
